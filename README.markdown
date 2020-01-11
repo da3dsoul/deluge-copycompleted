@@ -3,11 +3,11 @@ deluge-copycompleted
 
 This plugin for [Deluge][1] copies downloaded files to another location.
 
-It can only be configured via the web interface (or by hand); there is no GTK
-UI for this plugin.
+Move to and Label options added from other forks.
+
+Fixed for python3.8 / Deluge2
 
 It works fine for me, but if there are any issues, feel free to drop me an
-email at sam@edgylogic.com, or better yet, fork, fix, and I'll pull your
-changes.
+email at illustriousdreamer@gmail.com.
 
   [1]: http://deluge-torrent.org
