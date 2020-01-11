@@ -1,0 +1,10 @@
+Metadata-Version: 1.0
+Name: CopyCompleted
+Version: 2.0
+Summary: Copies finished torrents to another directory
+Home-page: UNKNOWN
+Author: mikepauer
+Author-email: illustriousdreamer@gmail.com
+License: GPLv3
+Description: Copies finished torrents to another directory
+Platform: UNKNOWN
