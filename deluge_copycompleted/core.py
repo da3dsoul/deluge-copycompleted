@@ -46,6 +46,7 @@ import logging
 from deluge.plugins.pluginbase import CorePluginBase
 import deluge.component as component
 import deluge.configmanager
+from deluge.configmanager import ConfigManager
 from deluge.core.rpcserver import export
 from deluge.event import DelugeEvent
 from deluge.ui.client import client
@@ -105,10 +106,9 @@ class Core(CorePluginBase):
         """
         torrent = component.get("TorrentManager").torrents[torrent_id]
         info = torrent.get_status([ "name", "save_path", "move_on_completed", "move_on_completed_path" ])
-        get_label = component.get("Core").get_torrent_status(torrent_id,["label"])
-        label = get_label["label"]
+        labels = self.get_labels(torrent_id)
         old_path = info["move_on_completed_path"] if info["move_on_completed"] else info["save_path"]
-        new_path = self.config["copy_to"]  + "/" + label if self.config["append_label_todir"] else self.config["copy_to"]
+        new_path = self.config["copy_to"]  + "/" + labels[0] if self.config["append_label_todir"] else self.config["copy_to"]
         if not os.path.exists(new_path):
             os.makedirs(new_path)
         files = torrent.get_files()
@@ -120,9 +120,59 @@ class Core(CorePluginBase):
             return
         
         log.info("COPYCOMPLETED: Copying %s from %s to %s" % (info["name"], old_path, new_path)) 
-        copy_thread = threading.Thread(target=Core._thread_copy, args=(torrent_id, old_path, new_path, files, umask))
-        copy_thread.setDaemon(True)
-        copy_thread.start()
+        threading.Thread(target=Core._thread_copy, args=(torrent_id, old_path, new_path, files, umask),daemon=True).start()
+
+    @staticmethod
+    def _thread_copy(torrent_id, old_path, new_path, files, umask):
+        # apply different umask if available
+        if umask:
+            log.debug("COPYCOMPLETED: Applying new umask of octal %s" % umask)
+            mask = umask[1:4]
+            new_umask = int(mask, 8)
+            old_umask = os.umask(new_umask)
+
+        path_pairs = [ ]
+        for f in files:
+            try:
+                old_file_path = os.path.join(old_path, f["path"])
+                new_file_path = os.path.join(new_path, f["path"])
+
+                # check that this file exists at the current location
+                if not os.path.exists(old_file_path):
+                    log.debug("COPYCOMPLETED: %s was not downloaded. Skipping." % f["path"])
+                    break
+
+                # check that this file doesn't already exist at the new location
+                if os.path.exists(new_file_path):
+                    log.info("COPYCOMPLETED: %s already exists in the destination. Skipping." % f["path"])
+                    break
+
+                log.info("COPYCOMPLETED: Copying %s to %s" % (old_file_path, new_file_path))
+
+                # ensure dirs up to this exist
+                if not os.path.exists(os.path.dirname(new_file_path)):
+                    os.makedirs(os.path.dirname(new_file_path))
+
+                # copy the file
+                shutil.copy2(old_file_path, new_file_path)
+
+                # amend file mode with umask if specified
+                if umask:
+                    # choose 0666 so execute bit is not set for files
+                    os.chmod(new_file_path, (~new_umask & 0o666))
+
+                path_pairs.append(( old_file_path, new_file_path ))
+
+            except Exception as e:
+                os.error("COPYCOMPLETED: Could not copy file.\n%s" % str(e))
+
+        # revert new umask
+        if umask:
+            log.debug("COPYCOMPLETED: reverting umask to original")
+            os.umask(old_umask)
+
+        component.get("EventManager").emit(TorrentCopiedEvent(torrent_id, old_path, new_path, path_pairs))
+
     def on_torrent_copied(self, torrent_id, old_path, new_path, path_pairs):
         """
         Remove old path if option enabled
@@ -181,57 +231,21 @@ class Core(CorePluginBase):
             except:
                 return
 
-    @staticmethod
-    def _thread_copy(torrent_id, old_path, new_path, files, umask):
-        # apply different umask if available
-        if umask:
-            log.debug("COPYCOMPLETED: Applying new umask of octal %s" % umask)
-            new_umask = int(umask, 8)
-            new_umask = '0o' + new_umask[1:4]
-            old_umask = os.umask(new_umask)
-        
-        path_pairs = [ ]
-        for f in files:
-            try:
-                old_file_path = os.path.join(old_path, f["path"])
-                new_file_path = os.path.join(new_path, f["path"])
+    def get_labels(self, torrent_id):
+        labels = []
+        label_config = ConfigManager('label.conf', defaults=False)
+        if label_config is not False:
+            if 'torrent_labels' in label_config:
+                if torrent_id in label_config['torrent_labels']:
+                    labels.append(label_config['torrent_labels'][torrent_id])
+        label_plus_config = ConfigManager('labelplus.conf', defaults=False)
+        if label_plus_config is not False:
+            if 'mappings' in label_plus_config:
+                if torrent_id in label_plus_config['mappings']:
+                  mapping = label_plus_config['mappings'][torrent_id]
+                  labels.append(label_plus_config['labels'][mapping]['name'])
+        return labels
 
-                # check that this file exists at the current location
-                if not os.path.exists(old_file_path):
-                    log.debug("COPYCOMPLETED: %s was not downloaded. Skipping." % f["path"])
-                    break
-
-                # check that this file doesn't already exist at the new location
-                if os.path.exists(new_file_path):
-                    log.info("COPYCOMPLETED: %s already exists in the destination. Skipping." % f["path"])
-                    break
-
-                log.info("COPYCOMPLETED: Copying %s to %s" % (old_file_path, new_file_path))
-
-                # ensure dirs up to this exist
-                if not os.path.exists(os.path.dirname(new_file_path)):
-                    os.makedirs(os.path.dirname(new_file_path))
-
-                # copy the file
-                shutil.copy2(old_file_path, new_file_path)
-
-                # amend file mode with umask if specified
-                if umask:
-                    # choose 0666 so execute bit is not set for files
-                    os.chmod(new_file_path, (~new_umask & 0o666))
-
-                path_pairs.append(( old_file_path, new_file_path ))
-
-            except Exception as e:
-                os.error("COPYCOMPLETED: Could not copy file.\n%s" % str(e))
-
-        # revert new umask
-        if umask:
-            log.debug("COPYCOMPLETED: reverting umask to original")
-            os.umask(old_umask)
-
-        component.get("EventManager").emit(TorrentCopiedEvent(torrent_id, old_path, new_path, path_pairs))
-            
     @export()
     def set_config(self, config):
         "sets the config dictionary"
